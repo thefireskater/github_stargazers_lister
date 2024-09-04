@@ -1,14 +1,35 @@
 import sys
 import os
 import logging
+import argparse
 from github import Github
 from dotenv import load_dotenv
+from datetime import datetime
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+def setup_logging(log_file):
+    # Ensure the logs directory exists
+    os.makedirs(os.path.dirname(log_file), exist_ok=True)
+
+    # Configure file logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        filename=log_file,
+        filemode='w'
+    )
 
 def main():
+    # Set up argument parser
+    parser = argparse.ArgumentParser(description="Find stargazers of GitHub repositories")
+    parser.add_argument('repositories', nargs='+', help='List of repositories to process')
+    parser.add_argument('-o', '--output', help='Output file to write results')
+    args = parser.parse_args()
+
+    # Set up logging
+    log_file = os.path.join('logs', f"stargazers_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+    setup_logging(log_file)
+    logger = logging.getLogger(__name__)
+
     # Load environment variables from .env file
     load_dotenv()
 
@@ -19,42 +40,56 @@ def main():
         logger.error("GITHUB_TOKEN not found in .env file")
         sys.exit(1)
 
-    g = Github(github_token, per_page=1000)
+    g = Github(github_token, per_page=100)
 
-    # Get the list of repositories from command-line arguments
-    repositories = sys.argv[1:]
-
-    if not repositories:
-        logger.warning("No repositories provided. Usage: python stars.py repo1 repo2 ...")
-        sys.exit(1)
-
-    # Set to store unique usernames
-    unique_stargazers = set()
+    # Set to store unique usernames across all repositories
+    all_unique_stargazers = set()
 
     # Iterate through each repository
-    for repo in repositories:
+    for repo in args.repositories:
         logger.info(f"Processing repository: {repo}")
         try:
             # Get the repository object
             repository = g.get_repo(repo)
             
-            # Get stargazers and add their usernames to the set
-            stargazers = repository.get_stargazers()
-            for stargazer in stargazers:
-                if stargazer.login not in unique_stargazers:
-                    unique_stargazers.add(stargazer.login)
-                    logger.info(f"Added new stargazer: {stargazer.login}")
-                else:
-                    logger.debug(f"Skipped duplicate stargazer: {stargazer.login}")
+            # Log the total number of stargazers for this repository
+            total_stargazers = repository.stargazers_count
+            logger.info(f"Total stargazers for {repo}: {total_stargazers}")
             
-            logger.info(f"Found {len(unique_stargazers)} unique stargazers so far")
+            # Set to store unique usernames for this repository
+            repo_unique_stargazers = set()
+            
+            # Get stargazers and add their usernames to the sets
+            stargazers = repository.get_stargazers()
+            page_count = 0
+            while True:
+                page_count += 1
+                page = stargazers.get_page(page_count - 1)
+                if not page:
+                    break
+                new_stargazers = set(stargazer.login for stargazer in page)
+                repo_unique_stargazers.update(new_stargazers)
+                all_unique_stargazers.update(new_stargazers)
+                logger.info(f"Downloaded page {page_count} of stargazers. Total unique stargazers across all repos: {len(all_unique_stargazers)}")
+            
+            logger.info(f"Finished processing {repo}. Unique stargazers for this repo: {len(repo_unique_stargazers)}")
+            logger.info(f"Total stargazers: {total_stargazers}, Unique stargazers: {len(repo_unique_stargazers)}")
+            logger.info(f"Total unique stargazers across all repos so far: {len(all_unique_stargazers)}")
         except Exception as e:
             logger.error(f"Error processing repository {repo}: {str(e)}")
 
-    # Print unique usernames
-    logger.info(f"Total unique stargazers: {len(unique_stargazers)}")
-    for username in unique_stargazers:
-        print(username)
+    # Log final count of unique stargazers across all repositories
+    logger.info(f"Total unique stargazers across all repositories: {len(all_unique_stargazers)}")
+
+    # Write or print unique usernames
+    if args.output:
+        with open(args.output, 'w') as f:
+            for username in all_unique_stargazers:
+                f.write(f"{username}\n")
+        logger.info(f"Results written to {args.output}")
+    else:
+        for username in all_unique_stargazers:
+            print(username)
 
 if __name__ == "__main__":
     main()
